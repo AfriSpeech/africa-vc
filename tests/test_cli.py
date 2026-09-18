@@ -27,6 +27,44 @@ def test_keep_filters_on_voice_and_language():
     assert not _keep(row, None, ["ewe"])
 
 
+def test_voice_bank_covers_the_datasets_voices():
+    from africa_vc.voices import VOICES
+    # The dataset is 30 voices; a bank that drifts from it offers a voice the
+    # checkpoint never saw, or hides one it did.
+    assert len(VOICES) == 30
+
+
+def test_voice_names_are_case_insensitive():
+    from africa_vc.voices import resolve
+    assert resolve("sulafat") == "Sulafat"
+    assert resolve("ZEPHYR") == "Zephyr"
+
+
+def test_unknown_voice_says_where_to_look():
+    import pytest
+    from africa_vc.voices import resolve
+    with pytest.raises(SystemExit) as exc:
+        resolve("Nope")
+    assert "africa-vc voices" in str(exc.value)
+
+
+def test_convert_validates_before_touching_seedvc(capsys, monkeypatch):
+    """Resolving a run clones Seed-VC and installs torch — minutes of work.
+
+    A missing flag must be reported before any of that happens, so this fails
+    the test if the code path reaches Seed-VC at all.
+    """
+    import africa_vc.seedvc as seedvc
+    monkeypatch.setattr(seedvc, "ensure",
+                        lambda *a, **k: pytest_fail("touched Seed-VC"))
+    assert main(["convert", "--source", "x.wav"]) == 1
+    assert "voice" in capsys.readouterr().err
+
+
+def pytest_fail(msg):
+    raise AssertionError(msg)
+
+
 def test_cli_requires_a_subcommand(capsys):
     try:
         main([])

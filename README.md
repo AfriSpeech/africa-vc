@@ -76,12 +76,32 @@ measuring rather than assuming.
 ## 3 · Convert
 
 ```bash
-africa-vc convert --source speech.wav --target voice.wav --run zephyr
-africa-vc convert --source clips/ --target voice.wav --run zephyr --output out/
+africa-vc voices                                              # the 30 on offer
+africa-vc convert --source speech.wav --voice Sulafat --run multivoice
+africa-vc convert --source clips/ --voice Kore --run multivoice --output out/
+africa-vc convert --source speech.wav --target my_own.wav --run multivoice
 ```
 
-`--source` is the audio whose words you keep; `--target` is the voice you want.
+`--source` is the audio whose words you keep. The voice comes either from the
+**bank** (`--voice`) or from any clip you supply (`--target`).
+
 `--diffusion-steps` defaults to 50: 25 is audibly rough, 100 buys little.
+
+### The voice bank
+
+A single-speaker checkpoint carries its voice inside it — ghana-vc converts to
+one Twi speaker and there is nothing to choose. Training on all 30 makes the
+voice a **runtime argument**: the reference clip selects it, so every voice
+stays reachable from one checkpoint.
+
+That is the reason to train **once on the full set** rather than a checkpoint
+per voice. A per-voice fine-tune sharpens one timbre and loses the other 29.
+
+Reference clips are fetched from the dataset on first use and cached under
+`~/.cache/africa-vc/voices/`, not vendored — 30 WAVs is 10 MB of git history
+for files already on the Hub. `--voice-language` picks which language's clip
+stands in for a voice (default `swh`): timbre is language-independent, but a
+reference still carries prosody.
 
 For bulk conversion over a whole Hub dataset with the models held open, use
 [ghana-vc](https://github.com/GhanaNLP/ghana-vc) instead — it loads once rather
