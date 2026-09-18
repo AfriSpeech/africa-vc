@@ -58,6 +58,30 @@ image = (
 )
 
 
+def _with_backoff(fn, what: str, attempts: int = 10, cap: float = 300.0):
+    """Retry through the Hub's rate limiting.
+
+    A 429 is a wait, not a failure, and it can arrive hours into a run or on
+    the very first metadata call. Giving up on one throws away everything
+    already downloaded, so this backs off and keeps going.
+    """
+    import random
+    import time
+
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except Exception as exc:
+            transient = any(m in str(exc) for m in ("429", "Too Many Requests",
+                                                    "503", "504", "timed out"))
+            if not transient or attempt == attempts:
+                raise
+            delay = min(cap, 2 ** attempt) * (0.5 + random.random())
+            print(f"  {what}: {type(exc).__name__} — retry {attempt}/{attempts} "
+                  f"in {delay:.0f}s", flush=True)
+            time.sleep(delay)
+
+
 def _from_shards(out, limit: int = 0) -> int:
     """Write every clip, reading the parquet shards rather than loose files."""
     import io
@@ -66,14 +90,20 @@ def _from_shards(out, limit: int = 0) -> int:
     import soundfile as sf
     from datasets import Audio, load_dataset
 
-    ds = load_dataset(DATASET, split="train", streaming=True,
-                      token=os.environ["HF_TOKEN"])
+    ds = _with_backoff(
+        lambda: load_dataset(DATASET, split="train", streaming=True,
+                             token=os.environ["HF_TOKEN"]),
+        "load_dataset")
     # decode=False hands back the stored WAV bytes untouched; decoding would
     # drag in librosa to rebuild a file we already have.
     ds = ds.cast_column("audio", Audio(decode=False))
 
     written = 0
-    for row in ds:
+    rows = iter(ds)
+    while True:
+        row = _with_backoff(lambda: next(rows, None), "stream")
+        if row is None:
+            break
         raw = row["audio"]["bytes"]
         info = sf.info(io.BytesIO(raw))
         if not (1.0 <= info.duration <= 30.0):
@@ -148,10 +178,12 @@ def prepare(voices: str = "", languages: str = "", limit: int = 0,
         patterns = ["audio/**"]
     print(f"fetching {patterns[:4]}{' …' if len(patterns) > 4 else ''}", flush=True)
 
-    snap = snapshot_download(DATASET, repo_type="dataset",
-                             allow_patterns=patterns,
-                             token=os.environ["HF_TOKEN"],
-                             cache_dir=f"{VOL}/hf", max_workers=4)
+    snap = _with_backoff(
+        lambda: snapshot_download(DATASET, repo_type="dataset",
+                                  allow_patterns=patterns,
+                                  token=os.environ["HF_TOKEN"],
+                                  cache_dir=f"{VOL}/hf", max_workers=4),
+        "snapshot_download")
 
     written = skipped = 0
     for clip in sorted(Path(snap, "audio").rglob("*.wav")):
