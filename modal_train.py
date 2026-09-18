@@ -58,6 +58,37 @@ image = (
 )
 
 
+def _from_shards(out, limit: int = 0) -> int:
+    """Write every clip, reading the parquet shards rather than loose files."""
+    import io
+    from pathlib import Path
+
+    import soundfile as sf
+    from datasets import Audio, load_dataset
+
+    ds = load_dataset(DATASET, split="train", streaming=True,
+                      token=os.environ["HF_TOKEN"])
+    # decode=False hands back the stored WAV bytes untouched; decoding would
+    # drag in librosa to rebuild a file we already have.
+    ds = ds.cast_column("audio", Audio(decode=False))
+
+    written = 0
+    for row in ds:
+        raw = row["audio"]["bytes"]
+        info = sf.info(io.BytesIO(raw))
+        if not (1.0 <= info.duration <= 30.0):
+            continue
+        name = f"{row['language']}_{row['voice']}_{written:06d}.wav"
+        (Path(out) / name).write_bytes(raw)
+        written += 1
+        if written % 1000 == 0:
+            print(f"  {written} clips", flush=True)
+            volume.commit()
+        if limit and written >= limit:
+            break
+    return written
+
+
 @app.function(
     image=image,
     # No GPU: this streams rows and writes WAVs. Attaching one bills an idle
@@ -70,11 +101,18 @@ def prepare(voices: str = "", languages: str = "", limit: int = 0,
             name: str = "all") -> int:
     """Copy the selected clips onto the Volume. Idempotent: skips if present.
 
-    The dataset ships the same audio twice: parquet shards for `load_dataset`,
-    and loose WAVs at `audio/<language>/<voice>.wav`. Streaming the shards and
-    filtering afterwards downloads everything to keep a slice of it — a single
-    voice is one row in thirty, so 567 wanted clips arrive inside ~13 GB of
-    rows. Fetching the loose files by pattern downloads only what was asked for.
+    The dataset ships the same audio twice and each packaging wins a different
+    case, so this picks between them:
+
+    * **A subset** (a voice, a few languages) comes from the loose WAVs at
+      `audio/<language>/<voice>.wav`. Streaming the shards instead would pull
+      ~13 GB of rows to keep 567 clips, since one voice is one row in thirty.
+    * **Everything** comes from the parquet shards. Asking the Hub for 17,010
+      individual files is 17,010 requests and earns a 429; the same audio is
+      17 shard downloads.
+
+    Either way the stored bytes are written verbatim — the dataset went out of
+    its way not to re-encode, and decoding to re-encode would undo that.
     """
     import io
     from pathlib import Path
@@ -91,6 +129,15 @@ def prepare(voices: str = "", languages: str = "", limit: int = 0,
 
     want_v = [v.strip() for v in voices.split(",") if v.strip()]
     want_l = [l.strip() for l in languages.split(",") if l.strip()]
+    out.mkdir(parents=True, exist_ok=True)
+
+    if not want_v and not want_l:
+        written = _from_shards(out, limit)
+        done.write_text(str(written))
+        volume.commit()
+        print(f"{written} clips -> {out}")
+        return written
+
     if want_v and want_l:
         patterns = [f"audio/{l}/{v}.wav" for l in want_l for v in want_v]
     elif want_v:
@@ -104,8 +151,7 @@ def prepare(voices: str = "", languages: str = "", limit: int = 0,
     snap = snapshot_download(DATASET, repo_type="dataset",
                              allow_patterns=patterns,
                              token=os.environ["HF_TOKEN"],
-                             cache_dir=f"{VOL}/hf")
-    out.mkdir(parents=True, exist_ok=True)
+                             cache_dir=f"{VOL}/hf", max_workers=4)
 
     written = skipped = 0
     for clip in sorted(Path(snap, "audio").rglob("*.wav")):
