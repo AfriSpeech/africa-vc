@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "africa-vc"
+version = "0.1.0"
+description = "Fine-tune Seed-VC on African synthetic speech, and convert with it"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "AfriSpeech" }]
+keywords = ["voice-conversion", "seed-vc", "african-languages", "speech", "fine-tuning"]
+
+# torch / torchaudio / librosa are deliberately NOT pinned. Seed-VC ships its
+# own requirements.txt and installs them on first use; declaring our own
+# versions installs a second, different torch build whose CUDA runtime then
+# breaks torchaudio with "libcudart.so.12: cannot open shared object file".
+# Seed-VC owns the torch stack.
+#
+# numpy IS pinned, to match Seed-VC's own numpy==1.26.4. Without it we install
+# numpy 2.x first (with datasets/pyarrow wheels built against it), Seed-VC
+# downgrades numpy, and those wheels fail on "No module named 'numpy.strings'".
+#
+# datasets is held on the 2.x line and huggingface_hub below 0.34 on purpose:
+# newer datasets reach for Hub symbols that only exist later, and upgrading the
+# Hub breaks Seed-VC's BigVGAN, which calls the older API.
+dependencies = [
+    "datasets>=2.18,<3",
+    "huggingface_hub>=0.28.1,<0.34",
+    "soundfile>=0.12",
+    "numpy>=1.26,<2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+africa-vc = "africa_vc.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/AfriSpeech/africa-vc"
+Dataset = "https://huggingface.co/datasets/AfriSpeech/multivoice-synthetic-speech"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
